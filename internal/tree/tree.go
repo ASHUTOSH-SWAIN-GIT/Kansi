@@ -243,6 +243,68 @@ func (t *Tree) ApplySetData(path string, data []byte, newVersion int64, mtime in
 	return nil
 }
 
+// Walk invokes visit for every znode in the tree in depth-first order,
+// parents before children. Root is visited as path "/".
+//
+// Visit receives a live pointer to the znode — callers that need a
+// stable copy (e.g. snapshotters) must copy fields they care about.
+func (t *Tree) Walk(visit func(path string, z *Znode)) {
+	walkNode(t.root, "/", visit)
+}
+
+func walkNode(z *Znode, path string, visit func(string, *Znode)) {
+	visit(path, z)
+	for name, child := range z.Children {
+		var childPath string
+		if path == "/" {
+			childPath = "/" + name
+		} else {
+			childPath = path + "/" + name
+		}
+		walkNode(child, childPath, visit)
+	}
+}
+
+// Restore inserts a fully-formed znode at path. Used during snapshot
+// load — the caller is restoring pre-validated state, so no checks.
+// Parent must already exist (the DFS snapshot walk ensures this).
+// The root ("/") is restored by overwriting the existing root fields.
+func (t *Tree) Restore(path string, z *Znode) error {
+	if path == "/" {
+		// preserve the root pointer but copy in the restored metadata;
+		// children will be filled in by subsequent Restore calls.
+		t.root.Data = append([]byte(nil), z.Data...)
+		t.root.DataVersion = z.DataVersion
+		t.root.ChildrenVersion = z.ChildrenVersion
+		t.root.ACLversion = z.ACLversion
+		t.root.Ctime = z.Ctime
+		t.root.Mtime = z.Mtime
+		t.root.EphemeralOwner = z.EphemeralOwner
+		t.root.SequentialCounter = z.SequentialCounter
+		if t.root.Children == nil {
+			t.root.Children = make(map[string]*Znode)
+		}
+		return nil
+	}
+	parent, err := t.resolve(ParentPath(path))
+	if err != nil {
+		return err
+	}
+	node := &Znode{
+		Data:              append([]byte(nil), z.Data...),
+		DataVersion:       z.DataVersion,
+		ChildrenVersion:   z.ChildrenVersion,
+		ACLversion:        z.ACLversion,
+		Ctime:             z.Ctime,
+		Mtime:             z.Mtime,
+		EphemeralOwner:    z.EphemeralOwner,
+		SequentialCounter: z.SequentialCounter,
+		Children:          make(map[string]*Znode),
+	}
+	parent.Children[BaseName(path)] = node
+	return nil
+}
+
 // parseSequentialSuffix returns the numeric suffix of a sequential name,
 // or -1 if the name doesn't end in 10 digits.
 func parseSequentialSuffix(name string) int {

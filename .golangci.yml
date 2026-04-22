@@ -27,6 +27,13 @@ linters:
         - name: package-comments
           disabled: true
 
+  exclusions:
+    rules:
+      # tests often ignore Close/Write/Append errors for brevity
+      - path: _test\.go
+        linters:
+          - errcheck
+
 formatters:
   enable:
     - gofmt
