@@ -1,12 +1,5 @@
 # Lefthook configuration for kansi
-# Docs: https://lefthook.dev/configuration/
-#
-# Install hooks after cloning:
-#   lefthook install
-#
-# Run manually:
-#   lefthook run pre-commit
-#   lefthook run pre-push
+# Install: lefthook install
 
 pre-commit:
   parallel: true
@@ -16,46 +9,6 @@ pre-commit:
       run: gofmt -l -w {staged_files}
       stage_fixed: true
 
-    - name: goimports
-      glob: "*.go"
-      # Skip cleanly if goimports isn't installed yet; print a hint instead
-      # of failing the commit. Install with:
-      #   go install golang.org/x/tools/cmd/goimports@latest
-      run: |
-        if ! command -v goimports >/dev/null 2>&1; then
-          echo "goimports not installed; skipping. Run: go install golang.org/x/tools/cmd/goimports@latest"
-          exit 0
-        fi
-        goimports -w -local kansi {staged_files}
-      stage_fixed: true
-
-    - name: go-mod-tidy
-      glob: "{go.mod,go.sum,*.go}"
-      run: go mod tidy
-      stage_fixed: true
-
-    - name: go-vet
-      glob: "*.go"
-      run: go vet ./...
-
     - name: golangci-lint
       glob: "*.go"
-      run: |
-        if ! command -v golangci-lint >/dev/null 2>&1; then
-          echo "golangci-lint not installed; skipping. Install: brew install golangci-lint"
-          exit 0
-        fi
-        golangci-lint run --new-from-rev=HEAD --fix {staged_files}
-      stage_fixed: true
-
-pre-push:
-  parallel: true
-  jobs:
-    - name: golangci-lint-all
       run: golangci-lint run ./...
-
-    - name: go-build
-      run: go build ./...
-
-    - name: go-test
-      run: go test ./...

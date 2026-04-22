@@ -183,3 +183,79 @@ func (t *Tree) GetData(path string) ([]byte, int64, error) {
 	copy(out, node.Data)
 	return out, node.DataVersion, nil
 }
+
+// ApplyCreate directly inserts a znode. No validation — the caller
+// has already verified the txn is valid. Used for txn log replay
+// and for applying committed transactions from Zab.
+func (t *Tree) ApplyCreate(path string, data []byte, owner SessionID, ctime int64) error {
+	parent, err := t.resolve(ParentPath(path))
+	if err != nil {
+		return err
+	}
+	base := BaseName(path)
+
+	node := &Znode{
+		Data:           append([]byte(nil), data...),
+		Ctime:          ctime,
+		Mtime:          ctime,
+		EphemeralOwner: owner,
+		Children:       make(map[string]*Znode),
+	}
+	parent.Children[base] = node
+	parent.ChildrenVersion++
+	parent.Mtime = ctime
+
+	// keep the parent's sequential counter consistent with any
+	// sequential suffix in base (e.g. "lock-0000000005" -> counter >= 6)
+	if n := parseSequentialSuffix(base); n >= 0 && int64(n)+1 > parent.SequentialCounter {
+		parent.SequentialCounter = int64(n) + 1
+	}
+	return nil
+}
+
+// ApplyDelete removes a znode. No validation.
+func (t *Tree) ApplyDelete(path string) error {
+	parent, err := t.resolve(ParentPath(path))
+	if err != nil {
+		return err
+	}
+	delete(parent.Children, BaseName(path))
+	parent.ChildrenVersion++
+	parent.Mtime = time.Now().UnixMilli()
+	return nil
+}
+
+// ApplySetData writes data and sets the version directly.
+// Idempotent: if the znode is already at a version >= newVersion,
+// the write is skipped. This is what makes replay safe after a
+// fuzzy snapshot (paper section 4.3).
+func (t *Tree) ApplySetData(path string, data []byte, newVersion int64, mtime int64) error {
+	node, err := t.resolve(path)
+	if err != nil {
+		return err
+	}
+	if node.DataVersion >= newVersion {
+		return nil // already applied; replay is a no-op
+	}
+	node.Data = append([]byte(nil), data...)
+	node.DataVersion = newVersion
+	node.Mtime = mtime
+	return nil
+}
+
+// parseSequentialSuffix returns the numeric suffix of a sequential name,
+// or -1 if the name doesn't end in 10 digits.
+func parseSequentialSuffix(name string) int {
+	if len(name) < 10 {
+		return -1
+	}
+	suffix := name[len(name)-10:]
+	n := 0
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return -1
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
