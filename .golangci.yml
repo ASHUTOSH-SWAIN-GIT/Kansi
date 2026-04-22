@@ -1,0 +1,41 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: var-naming
+        - name: package-comments
+          disabled: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - kansi
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -191,6 +191,41 @@ These must hold at every stage. If a test shows one violated, stop and fix befor
 - **Fault injection**: crash a node mid-write, partition leader from quorum, drop/reorder messages at the transport layer.
 - **Linearizability check**: record all client ops with timestamps, post-hoc verify a valid serial order exists. Use porcupine-style checker.
 
+## Development
+
+Formatting and linting are automated via [lefthook](https://lefthook.dev).
+
+Required tools:
+
+```bash
+brew install lefthook golangci-lint
+go install golang.org/x/tools/cmd/goimports@latest
+```
+
+Install the git hooks (one-time, after cloning):
+
+```bash
+lefthook install
+```
+
+What runs when:
+
+- **pre-commit** (on staged `.go` files): `gofmt`, `goimports`, `go mod tidy`, `go vet`, `golangci-lint --fix`. Auto-fixed files are re-staged.
+- **pre-push** (whole module): `golangci-lint run ./...`, `go build ./...`, `go test ./...`.
+
+Run the hooks manually at any time:
+
+```bash
+lefthook run pre-commit
+lefthook run pre-push
+```
+
+Skip hooks for a single commit (use sparingly):
+
+```bash
+LEFTHOOK=0 git commit -m "..."
+```
+
 ## Non-Goals
 
 - Performance tuning (no benchmarks, no optimization passes)

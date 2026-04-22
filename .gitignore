@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test / coverage
+*.test
+*.out
+coverage.*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Lefthook local overrides
+lefthook-local.yml
