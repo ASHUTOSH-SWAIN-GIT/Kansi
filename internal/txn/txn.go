@@ -52,18 +52,22 @@ type CreateTxn struct {
 	Ctime          int64
 }
 
-// DeleteTxn carries the path of a znode to remove.
+// DeleteTxn carries the exact znode incarnation to remove.
 type DeleteTxn struct {
-	Path string
+	Path        string
+	TargetCzxid uint64
+	Mtime       int64
 }
 
 // SetDataTxn carries the exact new state. NewVersion is what the znode's
-// DataVersion should become after applying.
+// DataVersion should become after applying. TargetCzxid prevents replay from
+// mutating a newer znode that reused the same path.
 type SetDataTxn struct {
-	Path       string
-	Data       []byte
-	NewVersion int64
-	Mtime      int64
+	Path        string
+	Data        []byte
+	TargetCzxid uint64
+	NewVersion  int64
+	Mtime       int64
 }
 
 // ErrorTxn is recorded when a client request fails validation.

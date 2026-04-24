@@ -37,7 +37,7 @@ func TestRecoverFromLogOnly(t *testing.T) {
 	snap, logPath := paths(t)
 	w, _ := txnlog.Create(logPath)
 	w.Append(&txn.Txn{Zxid: 1, Type: txn.TypeCreate, Create: &txn.CreateTxn{Path: "/a", Data: []byte("v0")}})
-	w.Append(&txn.Txn{Zxid: 2, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v1"), NewVersion: 1}})
+	w.Append(&txn.Txn{Zxid: 2, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v1"), TargetCzxid: 1, NewVersion: 1}})
 	w.Close()
 
 	res, err := Recover(snap, logPath)
@@ -59,14 +59,19 @@ func TestRecoverFromSnapshotAndLog(t *testing.T) {
 
 	// build initial state, snapshot it
 	tr := tree.NewTree()
-	_, _ = tr.Create("/a", []byte("old"), 0, tree.CreateFlags{})
+	if err := txn.Apply(tr, &txn.Txn{
+		Zxid: 10, Type: txn.TypeCreate,
+		Create: &txn.CreateTxn{Path: "/a", Data: []byte("old")},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := snapshot.Write(snap, tr, 10); err != nil {
 		t.Fatal(err)
 	}
 
 	// log contains txns after the snapshot point
 	w, _ := txnlog.Create(logPath)
-	w.Append(&txn.Txn{Zxid: 11, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("new"), NewVersion: 1}})
+	w.Append(&txn.Txn{Zxid: 11, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("new"), TargetCzxid: 10, NewVersion: 1}})
 	w.Append(&txn.Txn{Zxid: 12, Type: txn.TypeCreate, Create: &txn.CreateTxn{Path: "/b"}})
 	w.Close()
 
@@ -92,8 +97,18 @@ func TestRecoverIdempotentReplay(t *testing.T) {
 	snap, logPath := paths(t)
 
 	tr := tree.NewTree()
-	_, _ = tr.Create("/a", []byte("v0"), 0, tree.CreateFlags{})
-	_, _ = tr.SetData("/a", []byte("v1"), 0) // DataVersion now 1
+	if err := txn.Apply(tr, &txn.Txn{
+		Zxid: 1, Type: txn.TypeCreate,
+		Create: &txn.CreateTxn{Path: "/a", Data: []byte("v0")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := txn.Apply(tr, &txn.Txn{
+		Zxid: 2, Type: txn.TypeSetData,
+		SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v1"), TargetCzxid: 1, NewVersion: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := snapshot.Write(snap, tr, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +117,8 @@ func TestRecoverIdempotentReplay(t *testing.T) {
 	// the SetData that's already in the snapshot, plus a newer one
 	w, _ := txnlog.Create(logPath)
 	w.Append(&txn.Txn{Zxid: 1, Type: txn.TypeCreate, Create: &txn.CreateTxn{Path: "/a", Data: []byte("v0")}})
-	w.Append(&txn.Txn{Zxid: 2, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v1"), NewVersion: 1}})
-	w.Append(&txn.Txn{Zxid: 3, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v2"), NewVersion: 2}})
+	w.Append(&txn.Txn{Zxid: 2, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v1"), TargetCzxid: 1, NewVersion: 1}})
+	w.Append(&txn.Txn{Zxid: 3, Type: txn.TypeSetData, SetData: &txn.SetDataTxn{Path: "/a", Data: []byte("v2"), TargetCzxid: 1, NewVersion: 2}})
 	w.Close()
 
 	res, err := Recover(snap, logPath)
@@ -113,6 +128,66 @@ func TestRecoverIdempotentReplay(t *testing.T) {
 	data, v, _ := res.Tree.GetData("/a")
 	if !bytes.Equal(data, []byte("v2")) || v != 2 {
 		t.Errorf("data=%q version=%d (want v2/2)", data, v)
+	}
+}
+
+func TestRecoverFuzzySnapshotPathReusePreservesNewIncarnation(t *testing.T) {
+	// The snapshot already captured /a after it was deleted and recreated.
+	// Replaying the old delete must not delete the newer /a or bump root
+	// child metadata again.
+	snap, logPath := paths(t)
+
+	createOld := &txn.Txn{
+		Zxid: 1, Type: txn.TypeCreate,
+		Create: &txn.CreateTxn{Path: "/a", Data: []byte("old"), Ctime: 100},
+	}
+	deleteOld := &txn.Txn{
+		Zxid: 2, Type: txn.TypeDelete,
+		Delete: &txn.DeleteTxn{Path: "/a", TargetCzxid: 1, Mtime: 200},
+	}
+	createNew := &txn.Txn{
+		Zxid: 3, Type: txn.TypeCreate,
+		Create: &txn.CreateTxn{Path: "/a", Data: []byte("new"), Ctime: 300},
+	}
+
+	tr := tree.NewTree()
+	for _, tx := range []*txn.Txn{createOld, deleteOld, createNew} {
+		if err := txn.Apply(tr, tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := snapshot.Write(snap, tr, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	w, _ := txnlog.Create(logPath)
+	w.Append(createOld)
+	w.Append(deleteOld)
+	w.Append(createNew)
+	w.Close()
+
+	res, err := Recover(snap, logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, _, err := res.Tree.GetData("/a")
+	if err != nil {
+		t.Fatalf("/a missing after recovery: %v", err)
+	}
+	if !bytes.Equal(data, []byte("new")) {
+		t.Errorf("/a data=%q, want new", data)
+	}
+	aStat, _ := res.Tree.Stat("/a")
+	if aStat.Czxid != 3 {
+		t.Errorf("/a czxid=%d, want 3", aStat.Czxid)
+	}
+	rootStat, _ := res.Tree.Stat("/")
+	if rootStat.ChildrenVersion != 3 {
+		t.Errorf("root cversion=%d, want 3", rootStat.ChildrenVersion)
+	}
+	if rootStat.Pzxid != 3 {
+		t.Errorf("root pzxid=%d, want 3", rootStat.Pzxid)
 	}
 }
 

@@ -28,6 +28,21 @@ type Tree struct {
 	root *Znode
 }
 
+// Stat is a stable copy of a znode's metadata.
+type Stat struct {
+	DataVersion       int64
+	ChildrenVersion   int64
+	ACLversion        int64
+	Ctime             int64
+	Mtime             int64
+	EphemeralOwner    SessionID
+	SequentialCounter int64
+	NumChildren       int
+	Czxid             uint64
+	Mzxid             uint64
+	Pzxid             uint64
+}
+
 // NewTree returns a Tree with an empty, non-ephemeral root znode.
 func NewTree() *Tree {
 	// root always exists, is never ephemeral, has no data
@@ -184,10 +199,31 @@ func (t *Tree) GetData(path string) ([]byte, int64, error) {
 	return out, node.DataVersion, nil
 }
 
+// Stat returns a copy of the znode metadata at path.
+func (t *Tree) Stat(path string) (Stat, error) {
+	node, err := t.resolve(path)
+	if err != nil {
+		return Stat{}, err
+	}
+	return Stat{
+		DataVersion:       node.DataVersion,
+		ChildrenVersion:   node.ChildrenVersion,
+		ACLversion:        node.ACLversion,
+		Ctime:             node.Ctime,
+		Mtime:             node.Mtime,
+		EphemeralOwner:    node.EphemeralOwner,
+		SequentialCounter: node.SequentialCounter,
+		NumChildren:       len(node.Children),
+		Czxid:             node.Czxid,
+		Mzxid:             node.Mzxid,
+		Pzxid:             node.Pzxid,
+	}, nil
+}
+
 // ApplyCreate directly inserts a znode. No validation — the caller
 // has already verified the txn is valid. Used for txn log replay
 // and for applying committed transactions from Zab.
-func (t *Tree) ApplyCreate(path string, data []byte, owner SessionID, ctime int64) error {
+func (t *Tree) ApplyCreate(path string, data []byte, owner SessionID, ctime int64, zxid uint64) error {
 	parent, err := t.resolve(ParentPath(path))
 	if err != nil {
 		return err
@@ -200,9 +236,13 @@ func (t *Tree) ApplyCreate(path string, data []byte, owner SessionID, ctime int6
 		Mtime:          ctime,
 		EphemeralOwner: owner,
 		Children:       make(map[string]*Znode),
+		Czxid:          zxid,
+		Mzxid:          zxid,
+		Pzxid:          zxid,
 	}
 	parent.Children[base] = node
 	parent.ChildrenVersion++
+	parent.Pzxid = zxid
 	parent.Mtime = ctime
 
 	// keep the parent's sequential counter consistent with any
@@ -213,15 +253,16 @@ func (t *Tree) ApplyCreate(path string, data []byte, owner SessionID, ctime int6
 	return nil
 }
 
-// ApplyDelete removes a znode. No validation.
-func (t *Tree) ApplyDelete(path string) error {
+// ApplyDelete removes a znode after the caller has verified its identity.
+func (t *Tree) ApplyDelete(path string, zxid uint64, mtime int64) error {
 	parent, err := t.resolve(ParentPath(path))
 	if err != nil {
 		return err
 	}
 	delete(parent.Children, BaseName(path))
 	parent.ChildrenVersion++
-	parent.Mtime = time.Now().UnixMilli()
+	parent.Pzxid = zxid
+	parent.Mtime = mtime
 	return nil
 }
 
@@ -229,7 +270,7 @@ func (t *Tree) ApplyDelete(path string) error {
 // Idempotent: if the znode is already at a version >= newVersion,
 // the write is skipped. This is what makes replay safe after a
 // fuzzy snapshot (paper section 4.3).
-func (t *Tree) ApplySetData(path string, data []byte, newVersion int64, mtime int64) error {
+func (t *Tree) ApplySetData(path string, data []byte, newVersion int64, mtime int64, zxid uint64) error {
 	node, err := t.resolve(path)
 	if err != nil {
 		return err
@@ -239,6 +280,7 @@ func (t *Tree) ApplySetData(path string, data []byte, newVersion int64, mtime in
 	}
 	node.Data = append([]byte(nil), data...)
 	node.DataVersion = newVersion
+	node.Mzxid = zxid
 	node.Mtime = mtime
 	return nil
 }
@@ -281,6 +323,9 @@ func (t *Tree) Restore(path string, z *Znode) error {
 		t.root.Mtime = z.Mtime
 		t.root.EphemeralOwner = z.EphemeralOwner
 		t.root.SequentialCounter = z.SequentialCounter
+		t.root.Czxid = z.Czxid
+		t.root.Mzxid = z.Mzxid
+		t.root.Pzxid = z.Pzxid
 		if t.root.Children == nil {
 			t.root.Children = make(map[string]*Znode)
 		}
@@ -299,6 +344,9 @@ func (t *Tree) Restore(path string, z *Znode) error {
 		Mtime:             z.Mtime,
 		EphemeralOwner:    z.EphemeralOwner,
 		SequentialCounter: z.SequentialCounter,
+		Czxid:             z.Czxid,
+		Mzxid:             z.Mzxid,
+		Pzxid:             z.Pzxid,
 		Children:          make(map[string]*Znode),
 	}
 	parent.Children[BaseName(path)] = node

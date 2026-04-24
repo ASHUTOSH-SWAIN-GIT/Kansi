@@ -17,6 +17,9 @@ type Znode struct {
 	Children          map[string]*Znode
 	SequentialCounter int64
 	DataVersion       int64
+	Czxid             uint64
+	Mzxid             uint64
+	Pzxid             uint64
 }
 
 // NewZnode constructs a fresh znode with creation/modification timestamps

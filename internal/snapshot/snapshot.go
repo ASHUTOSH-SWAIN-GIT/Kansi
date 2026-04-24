@@ -89,6 +89,9 @@ func Write(path string, tr *tree.Tree, startZxid txn.Zxid) error {
 				Mtime:             z.Mtime,
 				EphemeralOwner:    z.EphemeralOwner,
 				SequentialCounter: z.SequentialCounter,
+				Czxid:             z.Czxid,
+				Mzxid:             z.Mzxid,
+				Pzxid:             z.Pzxid,
 			},
 		}
 		if err := enc.Encode(r); err != nil {

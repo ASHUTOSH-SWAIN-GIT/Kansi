@@ -22,26 +22,49 @@ func Apply(tr *tree.Tree, t *Txn) error {
 		if t.Create == nil {
 			return fmt.Errorf("txn %d: create payload missing", t.Zxid)
 		}
-		if ok, _ := tr.Exists(t.Create.Path); ok {
-			return nil // already applied
+		if st, err := tr.Stat(t.Create.Path); err == nil {
+			createZxid := uint64(t.Zxid)
+			if createZxid == 0 || st.Czxid == 0 || st.Czxid >= createZxid {
+				return nil // already applied, or superseded by a newer incarnation
+			}
+			return tree.ErrNodeExists
+		} else if err != tree.ErrNoNode {
+			return err
 		}
-		return tr.ApplyCreate(t.Create.Path, t.Create.Data, t.Create.EphemeralOwner, t.Create.Ctime)
+		return tr.ApplyCreate(t.Create.Path, t.Create.Data, t.Create.EphemeralOwner, t.Create.Ctime, uint64(t.Zxid))
 
 	case TypeDelete:
 		if t.Delete == nil {
 			return fmt.Errorf("txn %d: delete payload missing", t.Zxid)
 		}
-		if ok, _ := tr.Exists(t.Delete.Path); !ok {
+		st, err := tr.Stat(t.Delete.Path)
+		if err == tree.ErrNoNode {
 			return nil // already applied
 		}
-		return tr.ApplyDelete(t.Delete.Path)
+		if err != nil {
+			return err
+		}
+		if t.Delete.TargetCzxid != 0 && st.Czxid != t.Delete.TargetCzxid {
+			return nil // delete targeted an older incarnation at the same path
+		}
+		return tr.ApplyDelete(t.Delete.Path, uint64(t.Zxid), t.Delete.Mtime)
 
 	case TypeSetData:
 		if t.SetData == nil {
 			return fmt.Errorf("txn %d: setdata payload missing", t.Zxid)
 		}
+		st, err := tr.Stat(t.SetData.Path)
+		if err == tree.ErrNoNode && t.SetData.TargetCzxid != 0 {
+			return nil // the targeted incarnation was already deleted
+		}
+		if err != nil {
+			return err
+		}
+		if t.SetData.TargetCzxid != 0 && st.Czxid != t.SetData.TargetCzxid {
+			return nil // set targeted a different incarnation at the same path
+		}
 		// ApplySetData handles the version-based idempotency check.
-		return tr.ApplySetData(t.SetData.Path, t.SetData.Data, t.SetData.NewVersion, t.SetData.Mtime)
+		return tr.ApplySetData(t.SetData.Path, t.SetData.Data, t.SetData.NewVersion, t.SetData.Mtime, uint64(t.Zxid))
 
 	case TypeError:
 		// Error txns occupy a log slot for ordering but don't touch state.
